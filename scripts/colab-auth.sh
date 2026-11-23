@@ -70,16 +70,18 @@ write_state_env() {
 
   local mode="local"
   local hardware="cpu"
+  local local_device="cpu"
   local high_mem="0"
-  local hw_label="LOCAL"
+  local hw_label="LOCAL CPU"
   if [[ -f "$STATE_FILE" ]]; then
     # Preserve currently selected execution mode & hardware label
     # shellcheck disable=SC1090
     source "$STATE_FILE" 2>/dev/null || true
     mode="${COLAB_RUNNER_MODE:-local}"
     hardware="${COLAB_RUNNER_HARDWARE:-cpu}"
+    local_device="${COLAB_RUNNER_LOCAL_DEVICE:-cpu}"
     high_mem="${COLAB_RUNNER_HIGH_MEM:-0}"
-    hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL}"
+    hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL CPU}"
   fi
 
   local short_credits="${balance/ compute units/ CU}"
@@ -90,6 +92,7 @@ write_state_env() {
   cat > "$STATE_FILE" <<EOF
 COLAB_RUNNER_MODE='${mode}'
 COLAB_RUNNER_HARDWARE='${hardware}'
+COLAB_RUNNER_LOCAL_DEVICE='${local_device}'
 COLAB_RUNNER_HIGH_MEM='${high_mem}'
 COLAB_RUNNER_HW_LABEL='${hw_label}'
 COLAB_RUNNER_EMAIL='${email}'

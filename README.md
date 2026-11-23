@@ -57,7 +57,8 @@ source ~/.bashrc
    /switch           # Interactive menu
    /switch t4        # Or switch directly to Colab T4 GPU
    /switch cpu       # Switch to Colab CPU
-   /switch local     # Switch back to Local Machine hardware
+   /switch local-gpu # Switch to Local Machine GPU (if CUDA/NVIDIA GPU is active)
+   /switch local-cpu # Switch to Local Machine CPU
    ```
 
 3. **Run any `.py` script or `.ipynb` notebook:**
@@ -80,8 +81,8 @@ source ~/.bashrc
 
 | Command | Description |
 | :--- | :--- |
-| `/switch` | Open interactive menu (`Local`, `Colab CPU`, `T4`, `L4`, `G4`, `A100`, `H100`, `TPU v5e1`/`v6e1`, `stop`) |
-| `/switch <target>` | Direct switch (`local`, `cpu`, `t4`, `l4`, `g4`, `a100`, `h100`, `v5e1`, `v6e1`, `stop`; optional `--high-mem`) |
+| `/switch` | Open interactive menu (`Local CPU`, `Local GPU`, `Colab CPU`, `T4`, `L4`, `G4`, `A100`, `H100`, `TPU v5e1`/`v6e1`, `stop`) |
+| `/switch <target>` | Direct switch (`local-cpu`, `local-gpu`, `cpu`, `t4`, `l4`, `g4`, `a100`, `h100`, `v5e1`, `v6e1`, `stop`; optional `--high-mem`) |
 | `/run <file>` | Run a `.py` script or `.ipynb` notebook on the active runtime |
 | `python <file.py\|.ipynb>` | Automatically routes single `.py` / `.ipynb` file execution to the active runtime |
 | `/login [--switch]` | Sign in to Google Colab or switch accounts directly in the terminal |

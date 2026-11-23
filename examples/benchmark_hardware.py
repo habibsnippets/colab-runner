@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
 Hardware Verification & Latency Benchmark Script
-Run on Local Machine CPU, Google Colab CPU, or Google Colab GPU (e.g. T4)
-to verify active hardware and compare compute latency & throughput.
+Run across:
+  - Local Machine CPU  (/switch local-cpu)
+  - Local Machine GPU  (/switch local-gpu)
+  - Google Colab CPU   (/switch cpu)
+  - Google Colab GPU   (/switch t4, /switch l4, /switch a100, etc.)
+
+Verifies detected hardware (including physical PCI GPUs, CUDA/MPS availability,
+and driver state) and benchmarks latency + throughput.
 """
 
 import os
@@ -50,7 +56,20 @@ def get_nvidia_smi_info() -> str:
         ).strip()
         return out or "None"
     except Exception:
-        return "None"
+        return "None (driver inactive or no NVIDIA GPU)"
+
+
+def get_pci_gpus() -> str:
+    try:
+        out = subprocess.check_output(["lspci"], stderr=subprocess.DEVNULL, text=True, timeout=5)
+        lines = [
+            line.split(": ", 1)[1].strip()
+            for line in out.splitlines()
+            if any(k in line.lower() for k in ("vga compatible controller", "3d controller", "display controller"))
+        ]
+        return "; ".join(lines) if lines else "None"
+    except Exception:
+        return "Unavailable"
 
 
 def detect_environment() -> str:
@@ -59,22 +78,24 @@ def detect_environment() -> str:
     return "LOCAL MACHINE"
 
 
-def sync_if_cuda(torch_mod, device) -> None:
+def sync_if_device(torch_mod, device) -> None:
     if device.type == "cuda":
         torch_mod.cuda.synchronize()
+    elif device.type == "mps" and hasattr(torch_mod, "mps"):
+        torch_mod.mps.synchronize()
 
 
 def time_op(torch_mod, device, fn, warmup: int, iters: int) -> list[float]:
     for _ in range(warmup):
         fn()
-    sync_if_cuda(torch_mod, device)
+    sync_if_device(torch_mod, device)
 
     latencies_ms = []
     for _ in range(iters):
-        sync_if_cuda(torch_mod, device)
+        sync_if_device(torch_mod, device)
         t0 = time.perf_counter()
         fn()
-        sync_if_cuda(torch_mod, device)
+        sync_if_device(torch_mod, device)
         t1 = time.perf_counter()
         latencies_ms.append((t1 - t0) * 1000.0)
     return latencies_ms
@@ -93,15 +114,31 @@ def main() -> None:
     cpu_cores = os.cpu_count() or 1
     ram_gb = get_ram_gb()
     gpu_smi = get_nvidia_smi_info()
+    pci_gpus = get_pci_gpus() if env_name == "LOCAL MACHINE" else "Colab VM"
+    requested_local_dev = os.environ.get("COLAB_RUNNER_LOCAL_DEVICE", "auto").lower()
 
     use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
+    use_mps = (not use_cuda) and hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
-    if use_cuda:
+    if env_name == "LOCAL MACHINE" and requested_local_dev == "cpu":
+        device = torch.device("cpu")
+    elif use_cuda:
+        device = torch.device("cuda")
+    elif use_mps and requested_local_dev != "cpu":
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    if device.type == "cuda":
         gpu_name = torch.cuda.get_device_name(0)
         props = torch.cuda.get_device_properties(0)
         vram_gb = props.total_memory / (1024 ** 3)
-        accel_label = f"GPU: {gpu_name} ({vram_gb:.1f} GB VRAM, CUDA {torch.version.cuda})"
+        accel_label = f"CUDA GPU: {gpu_name} ({vram_gb:.1f} GB VRAM, CUDA {torch.version.cuda})"
+        warmup_gemm, iters_gemm = 8, 25
+        warmup_mlp, iters_mlp = 8, 30
+        warmup_elem, iters_elem = 8, 30
+    elif device.type == "mps":
+        accel_label = "Apple Metal GPU (MPS)"
         warmup_gemm, iters_gemm = 8, 25
         warmup_mlp, iters_mlp = 8, 30
         warmup_elem, iters_elem = 8, 30
@@ -111,18 +148,23 @@ def main() -> None:
         warmup_mlp, iters_mlp = 2, 8
         warmup_elem, iters_elem = 3, 12
 
-    print("=" * 72)
+    print("=" * 74)
     print(" HARDWARE VERIFICATION")
-    print("=" * 72)
-    print(f" Environment  : {env_name}")
-    print(f" Hostname     : {platform.node()}")
-    print(f" OS / Python  : {platform.system()} {platform.release()} | Python {platform.python_version()}")
-    print(f" CPU Model    : {cpu_model} ({cpu_cores} cores)")
-    print(f" System RAM   : {ram_gb}")
-    print(f" nvidia-smi   : {gpu_smi}")
-    print(f" PyTorch      : {torch.__version__}")
-    print(f" Active Device: {device.type.upper()} — {accel_label}")
-    print("=" * 72)
+    print("=" * 74)
+    print(f" Environment      : {env_name}")
+    print(f" Hostname         : {platform.node()}")
+    print(f" OS / Python      : {platform.system()} {platform.release()} | Python {platform.python_version()}")
+    print(f" CPU Model        : {cpu_model} ({cpu_cores} cores)")
+    print(f" System RAM       : {ram_gb}")
+    print(f" PCI GPUs (lspci) : {pci_gpus}")
+    print(f" nvidia-smi       : {gpu_smi}")
+    print(f" PyTorch          : {torch.__version__} (CUDA built: {torch.version.cuda or 'No'})")
+    print(f" Requested Local  : {requested_local_dev}")
+    print(f" Active Device    : {device.type.upper()} — {accel_label}")
+    if env_name == "LOCAL MACHINE" and requested_local_dev == "gpu" and device.type == "cpu":
+        print(" Notice           : Local GPU mode was selected, but CUDA/MPS is not active")
+        print("                    (driver inactive or CPU-only PyTorch). Running on CPU.")
+    print("=" * 74)
     print("\nRunning latency benchmarks...")
 
     # 1. Dense Matrix Multiplication: 4096 x 4096 FP32 GEMM
@@ -163,13 +205,13 @@ def main() -> None:
     elem_mean = statistics.mean(elem_ms)
     elem_p50 = statistics.median(elem_ms)
 
-    print("\n" + "=" * 72)
+    print("\n" + "=" * 74)
     print(f" BENCHMARK SUMMARY — {env_name} ({accel_label})")
-    print("=" * 72)
+    print("=" * 74)
     print(f" 1) 4096x4096 FP32 MatMul : Mean {gemm_mean:8.2f} ms | P50 {gemm_p50:8.2f} ms | Min {gemm_min:8.2f} ms | {gemm_gflops:8.1f} GFLOPS")
     print(f" 2) 3-Layer MLP (B=2048)  : Mean {mlp_mean:8.2f} ms | P50 {mlp_p50:8.2f} ms")
     print(f" 3) Elementwise (16.7M)   : Mean {elem_mean:8.2f} ms | P50 {elem_p50:8.2f} ms")
-    print("=" * 72)
+    print("=" * 74)
 
 
 if __name__ == "__main__":

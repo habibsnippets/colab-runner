@@ -6,6 +6,7 @@ export PATH="$HOME/.local/bin:$HOME/miniconda3/bin:$HOME/anaconda3/bin:/usr/loca
 
 MODE="local"
 HARDWARE="cpu"
+LOCAL_DEVICE="cpu"
 FILE_PATH=""
 PYTHON_BIN="python3"
 COLAB_BIN="colab"
@@ -18,6 +19,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode) MODE="${2:-local}"; shift 2 ;;
     --hardware) HARDWARE="${2:-cpu}"; shift 2 ;;
+    --local-device) LOCAL_DEVICE="${2:-cpu}"; shift 2 ;;
     --file) FILE_PATH="${2:-}"; shift 2 ;;
     --python) PYTHON_BIN="${2:-python3}"; shift 2 ;;
     --colab) COLAB_BIN="${2:-colab}"; shift 2 ;;
@@ -85,8 +87,10 @@ write_runner_state() {
   local state_file="$state_dir/vscode-runner-state.env"
   mkdir -p "$state_dir"
 
-  local hw_label="LOCAL"
-  if [[ "$MODE" == "colab" ]]; then
+  local hw_label="LOCAL CPU"
+  if [[ "$MODE" == "local" && "$LOCAL_DEVICE" == "gpu" ]]; then
+    hw_label="LOCAL GPU"
+  elif [[ "$MODE" == "colab" ]]; then
     hw_label="$(format_hardware_label "$HARDWARE")"
   fi
   local short_credits="${COLAB_BALANCE/ compute units/ CU}"
@@ -95,6 +99,7 @@ write_runner_state() {
   cat > "$state_file" <<EOF
 COLAB_RUNNER_MODE='${MODE}'
 COLAB_RUNNER_HARDWARE='${HARDWARE}'
+COLAB_RUNNER_LOCAL_DEVICE='${LOCAL_DEVICE}'
 COLAB_RUNNER_HIGH_MEM='${HIGH_MEM}'
 COLAB_RUNNER_HW_LABEL='${hw_label}'
 COLAB_RUNNER_EMAIL='${COLAB_RAW_EMAIL}'
@@ -131,18 +136,21 @@ session_name_for_hw() {
 }
 
 detect_local_hardware() {
-  local cpu_model cores ram_gb gpu_info
+  local cpu_model cores ram_gb gpu_info pci_gpus
   cpu_model="$(lscpu 2>/dev/null | awk -F': *' '/^Model name:/ {print $2; exit}')"
   [[ -z "$cpu_model" ]] && cpu_model="$(uname -m)"
   cores="$(nproc 2>/dev/null || echo "?")"
   ram_gb="$(free -h 2>/dev/null | awk '/^Mem:/ {print $2; exit}')"
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
     gpu_info="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | paste -sd ', ' -)"
-  else
-    gpu_info=""
-  fi
-  if [[ -n "$gpu_info" ]]; then
-    echo "${cpu_model} (${cores} cores, ${ram_gb} RAM) | GPU: ${gpu_info}"
+    echo "${cpu_model} (${cores} cores, ${ram_gb} RAM) | Active CUDA GPU: ${gpu_info}"
+  elif command -v lspci >/dev/null 2>&1; then
+    pci_gpus="$(lspci 2>/dev/null | grep -iE 'vga|3d|display' | sed 's/^[^:]*: //' | paste -sd '; ' - || true)"
+    if [[ -n "$pci_gpus" ]]; then
+      echo "${cpu_model} (${cores} cores, ${ram_gb} RAM) | PCI GPU: ${pci_gpus} (CUDA driver inactive)"
+    else
+      echo "${cpu_model} (${cores} cores, ${ram_gb} RAM) | No Local GPU"
+    fi
   else
     echo "${cpu_model} (${cores} cores, ${ram_gb} RAM) | No Local NVIDIA GPU"
   fi
@@ -154,9 +162,13 @@ write_runner_state
 if [[ "$MODE" == "local" ]]; then
   LOCAL_HW="$(detect_local_hardware)"
   PY_VER="$("$PYTHON_BIN" --version 2>&1 || echo "Python unavailable")"
+  LOCAL_TARGET_LABEL="LOCAL MACHINE CPU (CUDA disabled)"
+  if [[ "$LOCAL_DEVICE" == "gpu" ]]; then
+    LOCAL_TARGET_LABEL="LOCAL MACHINE GPU (falls back to CPU if CUDA unavailable)"
+  fi
   echo ""
   echo -e "${CYAN}======================================================================${RESET}"
-  echo -e " ${GREEN}EXECUTION TARGET :${RESET} ${BOLD}LOCAL MACHINE HARDWARE${RESET}"
+  echo -e " ${GREEN}EXECUTION TARGET :${RESET} ${BOLD}${LOCAL_TARGET_LABEL}${RESET}"
   echo -e " ${CYAN}LOCAL HARDWARE   :${RESET} ${LOCAL_HW}"
   echo -e " ${CYAN}PYTHON RUNTIME   :${RESET} ${PY_VER} ($(command -v "$PYTHON_BIN" || echo "$PYTHON_BIN"))"
   echo -e " ${YELLOW}COLAB CREDITS    :${RESET} ${COLAB_BALANCE} | Rate: ${COLAB_RATE} | Account: ${COLAB_EMAIL} [Standby]"
@@ -167,6 +179,11 @@ if [[ "$MODE" == "local" ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo -e "${DIM}[Dry Run] Local execution skipped.${RESET}"
     exit 0
+  fi
+
+  export COLAB_RUNNER_LOCAL_DEVICE="$LOCAL_DEVICE"
+  if [[ "$LOCAL_DEVICE" == "cpu" ]]; then
+    export CUDA_VISIBLE_DEVICES=""
   fi
 
   if [[ "$EXT_LOWER" == "py" ]]; then

@@ -15,7 +15,7 @@ if [[ $- == *i* && -z "${__COLAB_RUNNER_PROMPT_INSTALLED:-}" ]]; then
 
   __colab_runner_prompt() {
     local mode="local"
-    local hw_label="LOCAL"
+    local hw_label="LOCAL CPU"
     local credits="?"
     local rate="0.00/hr"
     local email=""
@@ -25,7 +25,7 @@ if [[ $- == *i* && -z "${__COLAB_RUNNER_PROMPT_INSTALLED:-}" ]]; then
       # shellcheck disable=SC1090
       source "$__COLAB_RUNNER_STATE_FILE" 2>/dev/null || true
       mode="${COLAB_RUNNER_MODE:-local}"
-      hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL}"
+      hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL CPU}"
       credits="${COLAB_RUNNER_CREDITS:-?}"
       rate="${COLAB_RUNNER_RATE:-0.00/hr}"
       email="${COLAB_RUNNER_EMAIL:-}"
@@ -53,11 +53,11 @@ if [[ $- == *i* && -z "${__COLAB_RUNNER_PROMPT_INSTALLED:-}" ]]; then
       fi
     else
       if [[ -n "$email" ]]; then
-        badge="\[\e[1;32m\][🖥 LOCAL\[\e[0m\] \[\e[1;33m\]| Colab: ${credits} (${rate})\[\e[1;32m\]]\[\e[0m\] "
-        term_title="LOCAL | Colab: ${credits}"
+        badge="\[\e[1;32m\][🖥 ${hw_label}\[\e[0m\] \[\e[1;33m\]| Colab: ${credits} (${rate})\[\e[1;32m\]]\[\e[0m\] "
+        term_title="${hw_label} | Colab: ${credits}"
       else
-        badge="\[\e[1;32m\][🖥 LOCAL\[\e[0m\] \[\e[2m\]| Colab: Signed Out\[\e[1;32m\]]\[\e[0m\] "
-        term_title="LOCAL | Colab: Signed Out"
+        badge="\[\e[1;32m\][🖥 ${hw_label}\[\e[0m\] \[\e[2m\]| Colab: Signed Out\[\e[1;32m\]]\[\e[0m\] "
+        term_title="${hw_label} | Colab: Signed Out"
       fi
     fi
 
@@ -86,12 +86,12 @@ if [[ $- == *i* && -z "${__COLAB_RUNNER_PROMPT_INSTALLED:-}" ]]; then
   }
 
   /status() {
-    local mode="local" hw_label="LOCAL"
+    local mode="local" hw_label="LOCAL CPU"
     if [[ -f "$__COLAB_RUNNER_STATE_FILE" ]]; then
       # shellcheck disable=SC1090
       source "$__COLAB_RUNNER_STATE_FILE" 2>/dev/null || true
       mode="${COLAB_RUNNER_MODE:-local}"
-      hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL}"
+      hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL CPU}"
     fi
     echo -e "\033[1;36m[Active Runtime]\033[0m ${hw_label} (mode=${mode})"
     "$HOME/.local/bin/colab-status" "$@"
@@ -108,16 +108,17 @@ if [[ $- == *i* && -z "${__COLAB_RUNNER_PROMPT_INSTALLED:-}" ]]; then
       return 2
     fi
 
-    local mode="local" hw="cpu" himem="0"
+    local mode="local" hw="cpu" local_dev="cpu" himem="0"
     if [[ -f "$__COLAB_RUNNER_STATE_FILE" ]]; then
       # shellcheck disable=SC1090
       source "$__COLAB_RUNNER_STATE_FILE" 2>/dev/null || true
       mode="${COLAB_RUNNER_MODE:-local}"
       hw="${COLAB_RUNNER_HARDWARE:-cpu}"
+      local_dev="${COLAB_RUNNER_LOCAL_DEVICE:-cpu}"
       himem="${COLAB_RUNNER_HIGH_MEM:-0}"
     fi
 
-    local args=(--mode "$mode" --hardware "$hw" --file "$file_path" --auto-stop-prev)
+    local args=(--mode "$mode" --hardware "$hw" --local-device "$local_dev" --file "$file_path" --auto-stop-prev)
     [[ "$himem" == "1" ]] && args+=(--high-mem)
     "$HOME/.local/bin/colab-runner" "${args[@]}"
   }
@@ -126,8 +127,8 @@ if [[ $- == *i* && -z "${__COLAB_RUNNER_PROMPT_INSTALLED:-}" ]]; then
     cat << 'EOF'
 
 Colab & Local CLI Commands:
-  /switch                 Interactive menu (Local CPU, Colab CPU, T4, L4, G4, A100, H100, TPU)
-  /switch <target>        Direct switch: local | cpu | t4 | l4 | g4 | a100 | h100 | v5e1 | v6e1
+  /switch                 Interactive menu (Local CPU/GPU, Colab CPU, T4, L4, G4, A100, H100, TPU)
+  /switch <target>        Direct: local-cpu | local-gpu | cpu | t4 | l4 | g4 | a100 | h100 | v5e1 | v6e1
   /run <file>             Run a .py script or .ipynb notebook on the active runtime
   python <file.py|.ipynb> Also routes automatically to the active runtime!
   /login [--switch]       Sign in or switch Google Colab account in terminal
@@ -163,7 +164,7 @@ EOF
   }
 
   # Tab completions
-  complete -W "local cpu t4 l4 g4 a100 h100 v5e1 v6e1 stop --high-mem" /switch
+  complete -W "local local-cpu local-gpu cpu t4 l4 g4 a100 h100 v5e1 v6e1 stop --high-mem" /switch
   complete -W "--switch --check" /login
   complete -f -X '!*.@(py|ipynb)' /run
 fi
