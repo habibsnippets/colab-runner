@@ -74,12 +74,14 @@ echo -e "${GREEN}    Verified:${RESET} $("$COLAB_EXE" version 2>/dev/null || ech
 
 # 2. Install runner scripts
 echo -e "${CYAN}==> Step 2/4: Installing colab-runner scripts & commands...${RESET}"
+mkdir -p "$SCRIPTS_DIR/py_ipv4"
 SCRIPT_FILES=(
   "colab-auth.sh"
   "colab-shell-init.sh"
   "colab-switch.sh"
   "colab-terminal-runner.sh"
   "local-ipynb-runner.py"
+  "py_ipv4/sitecustomize.py"
 )
 
 LOCAL_REPO_DIR=""

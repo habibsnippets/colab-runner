@@ -3,11 +3,20 @@ set -uo pipefail
 
 export PATH="$HOME/.local/bin:$HOME/miniconda3/bin:$HOME/anaconda3/bin:/usr/local/bin:/usr/bin:$PATH"
 
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 COLAB_BIN="$(command -v colab || echo "$HOME/.local/bin/colab")"
 COLAB_PY="$HOME/.local/share/uv/tools/google-colab-cli/bin/python3"
 STATE_DIR="$HOME/.config/colab-cli"
 STATE_FILE="$STATE_DIR/vscode-runner-state.env"
 LEGACY_TOKEN="$STATE_DIR/token.json"
+
+run_colab() {
+  if [[ -d "$SCRIPT_DIR/py_ipv4" ]]; then
+    PYTHONPATH="$SCRIPT_DIR/py_ipv4${PYTHONPATH:+:$PYTHONPATH}" "$COLAB_BIN" "$@"
+  else
+    "$COLAB_BIN" "$@"
+  fi
+}
 
 BOLD="\033[1m"
 CYAN="\033[1;36m"
@@ -115,12 +124,12 @@ fetch_and_sync_status() {
   fi
 
   local whoami_out usage_out
-  whoami_out="$("$COLAB_BIN" whoami </dev/null 2>/dev/null || true)"
+  whoami_out="$(run_colab whoami </dev/null 2>/dev/null || true)"
   EMAIL="$(echo "$whoami_out" | awk -F': *' '/^Email:/ {print $2; exit}')"
 
   if [[ -n "$EMAIL" ]]; then
-    usage_out="$("$COLAB_BIN" usage </dev/null 2>/dev/null || true)"
-    SESSIONS_OUT="$("$COLAB_BIN" sessions </dev/null 2>/dev/null || true)"
+    usage_out="$(run_colab usage </dev/null 2>/dev/null || true)"
+    SESSIONS_OUT="$(run_colab sessions </dev/null 2>/dev/null || true)"
     BALANCE="$(echo "$usage_out" | awk -F': *' '/^Current balance:/ {print $2; exit}')"
     RATE="$(echo "$usage_out" | awk -F': *' '/^Usage rate:/ {print $2; exit}')"
     ACTIVE_VMS="$(echo "$usage_out" | awk -F': *' '/^Active assignments:/ {print $2; exit}')"
@@ -213,7 +222,7 @@ echo -e " 3. Paste the code here and press Enter."
 echo -e "${CYAN}======================================================================${RESET}"
 echo ""
 
-if ! "$COLAB_BIN" --auth=oauth2 whoami; then
+if ! run_colab --auth=oauth2 whoami; then
   echo -e "${RED}[Colab Auth] Sign-in was not completed.${RESET}" >&2
   fetch_and_sync_status
   exit 1

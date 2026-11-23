@@ -31,7 +31,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+run_colab() {
+  if [[ -d "$SCRIPT_DIR/py_ipv4" ]]; then
+    PYTHONPATH="$SCRIPT_DIR/py_ipv4${PYTHONPATH:+:$PYTHONPATH}" "$COLAB_BIN" "$@"
+  else
+    "$COLAB_BIN" "$@"
+  fi
+}
 
 BOLD="\033[1m"
 CYAN="\033[1;36m"
@@ -63,8 +71,8 @@ fetch_colab_info() {
 
   if command -v "$COLAB_BIN" >/dev/null 2>&1; then
     local whoami_out usage_out
-    whoami_out="$("$COLAB_BIN" whoami </dev/null 2>/dev/null || true)"
-    usage_out="$("$COLAB_BIN" usage </dev/null 2>/dev/null || true)"
+    whoami_out="$(run_colab whoami </dev/null 2>/dev/null || true)"
+    usage_out="$(run_colab usage </dev/null 2>/dev/null || true)"
 
     local email balance rate active
     email="$(echo "$whoami_out" | awk -F': *' '/^Email:/ {print $2; exit}')"
@@ -226,7 +234,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-SESSIONS_OUT="$("$COLAB_BIN" sessions 2>/dev/null || true)"
+SESSIONS_OUT="$(run_colab sessions </dev/null 2>/dev/null || true)"
 HAS_TARGET_SESSION=0
 OTHER_VSCODE_SESSIONS=()
 
@@ -244,7 +252,7 @@ done <<< "$SESSIONS_OUT"
 if [[ "$AUTO_STOP_PREV" -eq 1 && ${#OTHER_VSCODE_SESSIONS[@]} -gt 0 ]]; then
   for old_s in "${OTHER_VSCODE_SESSIONS[@]}"; do
     echo -e "${YELLOW}[Colab Runner] Switching runtime: stopping previous session '${old_s}'...${RESET}"
-    "$COLAB_BIN" stop -s "$old_s" || true
+    run_colab stop -s "$old_s" || true
   done
 fi
 
@@ -259,7 +267,7 @@ if [[ "$HAS_TARGET_SESSION" -eq 0 ]]; then
     NEW_ARGS+=(--high-mem)
   fi
   echo -e "${CYAN}[Colab Runner] Provisioning Colab runtime (${HW_LABEL})...${RESET}"
-  if ! "$COLAB_BIN" "${NEW_ARGS[@]}"; then
+  if ! run_colab "${NEW_ARGS[@]}"; then
     echo -e "${RED}[Colab Runner] Failed to provision Colab runtime '${HW_LABEL}'.${RESET}" >&2
     exit 1
   fi
@@ -268,7 +276,7 @@ else
 fi
 
 echo -e "${CYAN}[Colab Runner] Executing '${FILE_PATH}' on ${HW_LABEL}...${RESET}"
-"$COLAB_BIN" exec -s "$SESSION_NAME" -f "$FILE_PATH" --timeout "$EXEC_TIMEOUT"
+run_colab exec -s "$SESSION_NAME" -f "$FILE_PATH" --timeout "$EXEC_TIMEOUT"
 EXIT_CODE=$?
 
 fetch_colab_info
