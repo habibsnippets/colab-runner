@@ -15,6 +15,11 @@ rm -f \
 
 rm -rf "$HOME/.local/share/colab-runner"
 
+if command -v code >/dev/null 2>&1; then
+  code --uninstall-extension habibsnippets.colab-vscode-runner >/dev/null 2>&1 || true
+  code --uninstall-extension local.colab-vscode-runner >/dev/null 2>&1 || true
+fi
+
 if [[ -f "$HOME/.bashrc" ]]; then
   python3 - "$HOME/.bashrc" << 'EOF'
 import re, sys

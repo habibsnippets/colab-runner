@@ -4,3 +4,4 @@ __pycache__/
 *.log
 examples/*_output.ipynb
 examples/*_local_output.ipynb
+*.vsix

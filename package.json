@@ -2,8 +2,9 @@
   "name": "colab-vscode-runner",
   "displayName": "Colab & Local CLI Runner",
   "description": "CLI-first Google Colab & Local runner for VS Code terminals with /switch, /run, /login, /logout, /status, /stop, and persistent runtime + credit status in your terminal prompt.",
-  "version": "0.3.0",
-  "publisher": "local",
+  "version": "0.3.1",
+  "publisher": "habibsnippets",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -44,5 +45,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/habibsnippets/colab-runner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/habibsnippets/colab-runner/issues"
   }
 }

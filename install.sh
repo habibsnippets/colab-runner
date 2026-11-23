@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/habibsnippets/colab-runner/main"
+# Pinned release tag. Override with COLAB_RUNNER_REF=main (or another tag) if you want to.
+COLAB_RUNNER_VERSION="0.3.1"
+COLAB_RUNNER_REF="${COLAB_RUNNER_REF:-v$COLAB_RUNNER_VERSION}"
+REPO_RAW_BASE="https://raw.githubusercontent.com/habibsnippets/colab-runner/$COLAB_RUNNER_REF"
+VSIX_NAME="colab-vscode-runner-$COLAB_RUNNER_VERSION.vsix"
+VSIX_URL="https://github.com/habibsnippets/colab-runner/releases/download/v$COLAB_RUNNER_VERSION/$VSIX_NAME"
 INSTALL_DIR="$HOME/.local/share/colab-runner"
 SCRIPTS_DIR="$INSTALL_DIR/scripts"
 VENV_DIR="$INSTALL_DIR/venv"
@@ -19,6 +24,14 @@ for arg in "$@"; do
     -h|--help)
       echo "Usage: install.sh [--no-vscode]"
       echo "Installs google-colab-cli (>=0.8.0), colab-runner slash commands, and VS Code extension."
+      echo ""
+      echo "This script writes to:"
+      echo "  ~/.local/share/colab-runner/   scripts (and a private venv if needed)"
+      echo "  ~/.local/bin/                  colab-* command symlinks"
+      echo "  ~/.config/colab-cli/           shell-init.sh"
+      echo "  ~/.bashrc (and ~/.bash_profile on macOS)  a marked block, removed by uninstall.sh"
+      echo ""
+      echo "Env: COLAB_RUNNER_REF=<tag|branch> to install a specific ref (default v$COLAB_RUNNER_VERSION)."
       exit 0
       ;;
   esac
@@ -156,15 +169,18 @@ fi
 # 4. Install VS Code extension if `code` CLI is available
 echo -e "${CYAN}==> Step 4/4: Checking VS Code extension...${RESET}"
 if [[ "$INSTALL_VSCODE_EXT" -eq 1 ]] && command -v code >/dev/null 2>&1; then
-  VSIX_PATH=""
-  if [[ -n "$LOCAL_REPO_DIR" && -f "$LOCAL_REPO_DIR/colab-vscode-runner-0.3.0.vsix" ]]; then
-    VSIX_PATH="$LOCAL_REPO_DIR/colab-vscode-runner-0.3.0.vsix"
-  else
-    VSIX_PATH="$INSTALL_DIR/colab-vscode-runner-0.3.0.vsix"
-    curl -fsSL "$REPO_RAW_BASE/colab-vscode-runner-0.3.0.vsix" -o "$VSIX_PATH"
+  VSIX_PATH="$INSTALL_DIR/$VSIX_NAME"
+  if [[ -n "$LOCAL_REPO_DIR" && -f "$LOCAL_REPO_DIR/$VSIX_NAME" ]]; then
+    VSIX_PATH="$LOCAL_REPO_DIR/$VSIX_NAME"
+  elif ! curl -fsSL "$VSIX_URL" -o "$VSIX_PATH"; then
+    VSIX_PATH=""
+    echo -e "${YELLOW}    Could not download $VSIX_URL; skipping VS Code extension (CLI tools are ready).${RESET}"
   fi
-  code --install-extension "$VSIX_PATH" --force >/dev/null
-  echo -e "${GREEN}    Installed VS Code extension:${RESET} local.colab-vscode-runner@0.3.0"
+  if [[ -n "$VSIX_PATH" ]]; then
+    code --uninstall-extension local.colab-vscode-runner >/dev/null 2>&1 || true  # pre-0.3.1 ID
+    code --install-extension "$VSIX_PATH" --force >/dev/null
+    echo -e "${GREEN}    Installed VS Code extension:${RESET} habibsnippets.colab-vscode-runner@$COLAB_RUNNER_VERSION"
+  fi
 elif [[ "$INSTALL_VSCODE_EXT" -eq 0 ]]; then
   echo -e "${YELLOW}    Skipped VS Code extension (--no-vscode).${RESET}"
 else

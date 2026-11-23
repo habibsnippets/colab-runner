@@ -31,16 +31,17 @@ A lightweight, CLI-first workflow (plus optional VS Code extension) to seamlessl
 Run this **one command** in your VS Code terminal or any Linux/macOS Bash terminal—it automatically installs the prerequisite (`google-colab-cli >= 0.8.0`), all slash commands (`/switch`, `/run`, `/login`, `/status`, `/stop`), and the VS Code extension (when `code` is available):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/habibsnippets/colab-runner/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/habibsnippets/colab-runner/v0.3.1/install.sh | bash
 ```
 
-*(Pass `--no-vscode` if you only want the terminal CLI without installing the VS Code extension: `curl -fsSL https://raw.githubusercontent.com/habibsnippets/colab-runner/main/install.sh | bash -s -- --no-vscode`)*
+*(Pass `--no-vscode` if you only want the terminal CLI without installing the VS Code extension: `curl -fsSL https://raw.githubusercontent.com/habibsnippets/colab-runner/v0.3.1/install.sh | bash -s -- --no-vscode`)*
 
 ### Alternative: Install from Cloned Repository
 
 ```bash
 git clone https://github.com/habibsnippets/colab-runner.git
 cd colab-runner
+git checkout v0.3.1   # or stay on main for the latest
 ./install.sh
 ```
 
@@ -103,20 +104,38 @@ source ~/.bashrc
 
 ---
 
-## Hardware Verification & Benchmark Results (`examples/benchmark_hardware.py`)
+## Example benchmark (`examples/benchmark_hardware.py`)
 
-Run `python examples/benchmark_hardware.py` across runtimes to verify active hardware and measure latency:
+Run `python examples/benchmark_hardware.py` on any runtime to verify the active hardware and measure latency. Sample numbers from one run (a laptop with an i5-1135G7 vs. a free-tier Colab T4; yours will differ):
 
-| Runtime | Status & Detected Hardware | `4096×4096` FP32 MatMul (Mean) | Throughput | 3-Layer MLP (`B=2048`) | Elementwise (`16.7M`) | Speedup vs Local CPU |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Local Machine CPU** (`local-cpu`) | Verified — `Intel Core i5-1135G7 @ 2.40GHz` (8 cores, `15.4 GB` RAM) | `356.87 ms` | `385.1 GFLOPS` | `494.93 ms` | `79.19 ms` | `1.0×` (Baseline) |
-| **Local Machine GPU** (`local-gpu`) | Verified — Detected `NVIDIA GeForce MX350` & `Intel Iris Xe` on PCI; CUDA driver inactive (`2.15.0+cpu`), clean CPU fallback | `363.29 ms` | `378.3 GFLOPS` | `449.98 ms` | `62.91 ms` | `~1.0×` (CPU fallback) |
-| **Google Colab CPU** (`cpu`) | Verified — `Intel Xeon @ 2.20GHz` (2 cores, `12.7 GB` RAM, `2.14.1+cpu`) | `2245.33 ms` | `61.2 GFLOPS` | `2889.66 ms` | `283.61 ms` | `0.16×` (`6.3×` slower) |
-| **Google Colab `T4`** (`t4`) | Verified — **`NVIDIA Tesla T4`** (`15360 MiB`, CUDA `13.0`, `2.14.1+cu130`) | **`33.55 ms`** | **`4096.3 GFLOPS`** | **`41.19 ms`** | **`3.46 ms`** | **`10.6×` MatMul / `22.9×` Elem** |
-| **Google Colab `L4`** (`l4`) | Eligible (`200 CU` tier); `POST /tun/m/assign` returned HTTP `503 Service Unavailable` (regional capacity) | — | — | — | — | — |
-| **Google Colab `G4`** (`g4`) | Eligible (`200 CU` tier); `POST /tun/m/assign` returned HTTP `503 Service Unavailable` (regional capacity) | — | — | — | — | — |
-| **Google Colab `A100`** (`a100`) | Eligible (`200 CU` tier); `POST /tun/m/assign` returned HTTP `503 Service Unavailable` (regional capacity) | — | — | — | — | — |
-| **Google Colab `H100`** (`h100`) | Ineligible on account tier (`/tun/m/ccu-info`: `ineligibleGpus: ["H100"]`) | — | — | — | — | — |
+| Runtime | `4096×4096` FP32 MatMul (mean) | Throughput |
+| :--- | :---: | :---: |
+| Local CPU (i5-1135G7) | `356.87 ms` | `385 GFLOPS` |
+| Colab CPU (2-core Xeon) | `2245.33 ms` | `61 GFLOPS` |
+| Colab `T4` | `33.55 ms` | `4096 GFLOPS` |
+
+---
+
+## How it works
+
+- `install.sh` installs Google's official [`google-colab-cli`](https://pypi.org/project/google-colab-cli/) and drops the `scripts/` into `~/.local/share/colab-runner/`.
+- A marked block in `~/.bashrc` sources `shell-init.sh`, which defines the `/switch`, `/run`, `/login`, `/status`, `/stop` functions, wraps `python` for `.py`/`.ipynb` files, and sets the prompt badge.
+- `/switch` provisions a Colab VM through `colab-cli`; `/run` uploads and executes the file there (or runs it locally for `local-*`).
+- On terminal close / VS Code exit, `colab-on-close.sh` stops active VMs so compute units aren't burned.
+- Auth tokens are handled by `google-colab-cli` (system keyring). This project never stores or transmits your credentials itself.
+
+## Caveats
+
+- **Unofficial.** This project is not affiliated with or endorsed by Google. It relies on `google-colab-cli` and some undocumented Colab endpoints (`/tun/m/ccu-info`, `/tun/m/assign`) that can change or break without notice.
+- **Terms of service.** You are responsible for using Colab in line with [Google Colab's terms](https://research.google.com/colaboratory/faq.html). Don't use this for anything Colab disallows (e.g. mining, abuse of free-tier resources).
+- **Shell integration.** It modifies `~/.bashrc` and overrides `python` for single `.py`/`.ipynb` arguments while a runtime is active. `./uninstall.sh` reverts everything.
+- **Platform.** Linux/macOS with Bash only. No Windows/zsh/fish support yet.
+- **Cost.** Colab VMs consume compute units. Use `/status` and `/stop`; auto-stop is best-effort (a hard crash or `kill -9` can't be intercepted).
+- **Installer.** `install.sh` is pinned to a release tag. Read it first if you'd rather not pipe `curl` into `bash` (`install.sh --help` lists every path it writes to).
+
+## License
+
+[MIT](LICENSE)
 
 ---
 

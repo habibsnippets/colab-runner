@@ -1,0 +1,15 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: for f in install.sh uninstall.sh scripts/*.sh; do bash -n "$f"; done
+      - name: ShellCheck
+        run: shellcheck -S error install.sh uninstall.sh scripts/*.sh
+      - name: Python syntax
+        run: python3 -m py_compile scripts/*.py scripts/py_ipv4/sitecustomize.py
+      - name: JS syntax
+        run: node --check extension.js
