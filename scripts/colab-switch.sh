@@ -8,6 +8,17 @@ COLAB_BIN="$(command -v colab || echo "$HOME/.local/bin/colab")"
 STATE_DIR="$HOME/.config/colab-cli"
 STATE_FILE="$STATE_DIR/vscode-runner-state.env"
 
+BOLD="\033[1m"
+DARK="\033[1;34m"
+CYAN="\033[1;36m"
+GREEN="\033[1;32m"
+MAGENTA="\033[1;35m"
+YELLOW="\033[1;33m"
+RED="\033[1;31m"
+GREY="\033[90m"
+DIM="\033[2m"
+RESET="\033[0m"
+
 run_colab() {
   if [[ -d "$SCRIPT_DIR/py_ipv4" ]]; then
     PYTHONPATH="$SCRIPT_DIR/py_ipv4${PYTHONPATH:+:$PYTHONPATH}" "$COLAB_BIN" "$@"
@@ -16,20 +27,28 @@ run_colab() {
   fi
 }
 
-BOLD="\033[1m"
-CYAN="\033[1;36m"
-GREEN="\033[1;32m"
-MAGENTA="\033[1;35m"
-YELLOW="\033[1;33m"
-RED="\033[1;31m"
-DIM="\033[2m"
-RESET="\033[0m"
+run_tier_info() {
+  local py_bin="python3"
+  if [[ -f "$COLAB_BIN" ]]; then
+    local shebang_py
+    shebang_py="$(head -n 1 "$COLAB_BIN" 2>/dev/null | sed 's/^#!//' | awk '{print $1}')"
+    if [[ -n "$shebang_py" && -x "$shebang_py" ]]; then
+      py_bin="$shebang_py"
+    fi
+  fi
+  if [[ -d "$SCRIPT_DIR/py_ipv4" ]]; then
+    PYTHONPATH="$SCRIPT_DIR/py_ipv4${PYTHONPATH:+:$PYTHONPATH}" "$py_bin" "$SCRIPT_DIR/colab-tier-info.py" </dev/null 2>/dev/null || true
+  else
+    "$py_bin" "$SCRIPT_DIR/colab-tier-info.py" </dev/null 2>/dev/null || true
+  fi
+}
 
 # Load existing state
 CUR_MODE="local"
 CUR_HW="cpu"
 CUR_LOCAL_DEV="cpu"
 CUR_HIGH_MEM="0"
+CUR_SESSION_EPOCH="0"
 if [[ -f "$STATE_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$STATE_FILE" 2>/dev/null || true
@@ -37,6 +56,7 @@ if [[ -f "$STATE_FILE" ]]; then
   CUR_HW="${COLAB_RUNNER_HARDWARE:-cpu}"
   CUR_LOCAL_DEV="${COLAB_RUNNER_LOCAL_DEVICE:-cpu}"
   CUR_HIGH_MEM="${COLAB_RUNNER_HIGH_MEM:-0}"
+  CUR_SESSION_EPOCH="${COLAB_RUNNER_SESSION_START_EPOCH:-0}"
 fi
 
 HIGH_MEM=0
@@ -63,22 +83,80 @@ done
 
 fetch_colab_info() {
   EMAIL=""
-  BALANCE="N/A"
+  TIER="free"
+  BALANCE="0.00"
   RATE="0.00/hr"
   ACTIVE_VMS="0"
-  if command -v "$COLAB_BIN" >/dev/null 2>&1; then
-    local whoami_out usage_out
-    whoami_out="$(run_colab whoami </dev/null 2>/dev/null || true)"
-    EMAIL="$(echo "$whoami_out" | awk -F': *' '/^Email:/ {print $2; exit}')"
-    if [[ -n "$EMAIL" ]]; then
-      usage_out="$(run_colab usage </dev/null 2>/dev/null || true)"
-      BALANCE="$(echo "$usage_out" | awk -F': *' '/^Current balance:/ {print $2; exit}')"
-      RATE="$(echo "$usage_out" | awk -F': *' '/^Usage rate:/ {print $2; exit}')"
-      ACTIVE_VMS="$(echo "$usage_out" | awk -F': *' '/^Active assignments:/ {print $2; exit}')"
-      [[ -z "$BALANCE" ]] && BALANCE="?"
-      [[ -z "$RATE" ]] && RATE="0.00/hr"
-      [[ -z "$ACTIVE_VMS" ]] && ACTIVE_VMS="0"
-    fi
+  ELIGIBLE_GPUS="T4"
+  ELIGIBLE_TPUS=""
+  SESSION_START_EPOCH="$CUR_SESSION_EPOCH"
+
+  if command -v "$COLAB_BIN" >/dev/null 2>&1 || [[ "${COLAB_RUNNER_SIMULATE_FREE:-0}" == "1" ]]; then
+    local info_out
+    info_out="$(run_tier_info)"
+    while IFS='=' read -r k v; do
+      case "$k" in
+        EMAIL) EMAIL="$v" ;;
+        TIER) TIER="$v" ;;
+        BALANCE) BALANCE="$v" ;;
+        RATE) RATE="$v" ;;
+        ACTIVE_VMS) ACTIVE_VMS="$v" ;;
+        ELIGIBLE_GPUS) ELIGIBLE_GPUS="$v" ;;
+        ELIGIBLE_TPUS) ELIGIBLE_TPUS="$v" ;;
+        SESSION_START_EPOCH) SESSION_START_EPOCH="$v" ;;
+      esac
+    done <<< "$info_out"
+  fi
+}
+
+is_gpu_eligible() {
+  local gpu_upper
+  gpu_upper="$(echo "$1" | tr '[:lower:]' '[:upper:]')"
+  [[ ",${ELIGIBLE_GPUS}," == *",${gpu_upper},"* ]]
+}
+
+is_tpu_eligible() {
+  local tpu_upper
+  tpu_upper="$(echo "$1" | tr '[:lower:]' '[:upper:]')"
+  [[ ",${ELIGIBLE_TPUS}," == *",${tpu_upper},"* ]]
+}
+
+max_secs_for_hw() {
+  local hw="$1"
+  if [[ "$hw" == "cpu" ]]; then
+    echo "43200"
+  else
+    echo "14400"
+  fi
+}
+
+format_remaining_time() {
+  local start_ep="$1" max_s="$2"
+  local now rem hrs mins
+  now="$(date +%s)"
+  rem=$(( max_s - (now - start_ep) ))
+  [[ "$rem" -lt 0 ]] && rem=0
+  hrs=$(( rem / 3600 ))
+  mins=$(( (rem % 3600) / 60 ))
+  if [[ "$hrs" -gt 0 ]]; then
+    echo "${hrs}h ${mins}m left"
+  else
+    echo "${mins}m left"
+  fi
+}
+
+quota_summary_text() {
+  local hw="$1"
+  if [[ "$TIER" == "paid" ]]; then
+    echo "Credits: ${BALANCE} CU (${RATE})"
+    return
+  fi
+  local max_s
+  max_s="$(max_secs_for_hw "$hw")"
+  if [[ "$ACTIVE_VMS" =~ ^[0-9]+$ && "$ACTIVE_VMS" -gt 0 && "$SESSION_START_EPOCH" =~ ^[0-9]+$ && "$SESSION_START_EPOCH" -gt 0 ]]; then
+    echo "Free Session: $(format_remaining_time "$SESSION_START_EPOCH" "$max_s")"
+  else
+    echo "Free Tier (4h T4 / 12h CPU)"
   fi
 }
 
@@ -147,10 +225,12 @@ format_hw_label() {
 write_state() {
   local mode="$1" hw="$2" himem="$3" local_dev="${4:-cpu}"
   mkdir -p "$STATE_DIR"
-  local hw_label short_credits
+  local hw_label max_secs
   hw_label="$(format_hw_label "$mode" "$hw" "$himem" "$local_dev")"
-  short_credits="${BALANCE/ compute units/ CU}"
-  [[ -z "$short_credits" || "$short_credits" == "N/A" ]] && short_credits="?"
+  max_secs="$(max_secs_for_hw "$hw")"
+  if [[ ! "$ACTIVE_VMS" =~ ^[0-9]+$ || "$ACTIVE_VMS" -eq 0 ]]; then
+    SESSION_START_EPOCH="0"
+  fi
 
   cat > "$STATE_FILE" <<EOF
 COLAB_RUNNER_MODE='${mode}'
@@ -159,10 +239,37 @@ COLAB_RUNNER_LOCAL_DEVICE='${local_dev}'
 COLAB_RUNNER_HIGH_MEM='${himem}'
 COLAB_RUNNER_HW_LABEL='${hw_label}'
 COLAB_RUNNER_EMAIL='${EMAIL}'
-COLAB_RUNNER_CREDITS='${short_credits}'
+COLAB_RUNNER_TIER='${TIER}'
+COLAB_RUNNER_CREDITS='${BALANCE} CU'
 COLAB_RUNNER_RATE='${RATE}'
 COLAB_RUNNER_ACTIVE_VMS='${ACTIVE_VMS}'
+COLAB_RUNNER_ELIGIBLE_GPUS='${ELIGIBLE_GPUS}'
+COLAB_RUNNER_ELIGIBLE_TPUS='${ELIGIBLE_TPUS}'
+COLAB_RUNNER_SESSION_START_EPOCH='${SESSION_START_EPOCH}'
+COLAB_RUNNER_SESSION_MAX_SECS='${max_secs}'
 EOF
+}
+
+print_gpu_option() {
+  local num="$1" slug="$2" desc="$3" gpu_code="$4"
+  if is_gpu_eligible "$gpu_code"; then
+    local extra=""
+    if [[ "$TIER" == "free" && "$gpu_code" == "T4" ]]; then
+      extra=" • Free Tier: 4h session"
+    fi
+    echo -e "  ${DARK}[${num}]${RESET} ${BOLD}${slug}${RESET} — ${BOLD}${desc}${extra}${RESET}"
+  else
+    echo -e "  ${GREY}[${num}] ${slug} — ${desc} (Unavailable — requires Colab Pro / Compute Units)${RESET}"
+  fi
+}
+
+print_tpu_option() {
+  local num="$1" slug="$2" desc="$3" tpu_code="$4"
+  if is_tpu_eligible "$tpu_code"; then
+    echo -e "  ${DARK}[${num}]${RESET} ${BOLD}${slug}${RESET} — ${BOLD}${desc}${RESET}"
+  else
+    echo -e "  ${GREY}[${num}] ${slug} — ${desc} (Unavailable — requires Colab Pro / Compute Units)${RESET}"
+  fi
 }
 
 fetch_colab_info
@@ -170,28 +277,37 @@ fetch_colab_info
 if [[ "$STOP_ALL" -eq 1 ]]; then
   stop_all_sessions
   fetch_colab_info
+  SESSION_START_EPOCH="0"
   write_state "$CUR_MODE" "$CUR_HW" "$CUR_HIGH_MEM" "$CUR_LOCAL_DEV"
   exit 0
 fi
 
 if [[ -z "$TARGET_ARG" ]]; then
   cur_label="$(format_hw_label "$CUR_MODE" "$CUR_HW" "$CUR_HIGH_MEM" "$CUR_LOCAL_DEV")"
-  short_c="${BALANCE/ compute units/ CU}"
+  quota_str="$(quota_summary_text "$CUR_HW")"
   echo ""
-  echo -e "${CYAN}======================================================================${RESET}"
-  echo -e " ${BOLD}SELECT EXECUTION RUNTIME${RESET}  ${DIM}(Current: ${cur_label} | Credits: ${short_c})${RESET}"
-  echo -e "${CYAN}----------------------------------------------------------------------${RESET}"
-  echo -e "  ${GREEN}[1]${RESET} local-cpu — Local Machine CPU (forces CUDA_VISIBLE_DEVICES='')"
-  echo -e "  ${GREEN}[2]${RESET} local-gpu — Local Machine GPU (uses local CUDA/NVIDIA GPU if active)"
-  echo -e "  ${MAGENTA}[3]${RESET} cpu       — Google Colab CPU"
-  echo -e "  ${MAGENTA}[4]${RESET} t4        — Google Colab GPU: T4 (16 GB VRAM)"
-  echo -e "  ${MAGENTA}[5]${RESET} l4        — Google Colab GPU: L4 (24 GB VRAM)"
-  echo -e "  ${MAGENTA}[6]${RESET} g4        — Google Colab GPU: G4"
-  echo -e "  ${MAGENTA}[7]${RESET} a100      — Google Colab GPU: A100"
-  echo -e "  ${MAGENTA}[8]${RESET} h100      — Google Colab GPU: H100"
-  echo -e "  ${MAGENTA}[9]${RESET} v5e1/v6e1 — Google Colab TPU (enter v5e1 or v6e1)"
-  echo -e "  ${YELLOW}[0]${RESET} stop      — Stop All Active Colab VMs"
-  echo -e "${CYAN}======================================================================${RESET}"
+  echo -e "${CYAN}==========================================================================${RESET}"
+  echo -e " ${BOLD}SELECT EXECUTION RUNTIME${RESET}  ${DIM}(Current: ${cur_label} | ${quota_str})${RESET}"
+  echo -e "${CYAN}--------------------------------------------------------------------------${RESET}"
+  echo -e "  ${GREEN}[1]${RESET} ${BOLD}local-cpu${RESET} — ${BOLD}Local Machine CPU${RESET} ${DIM}(forces CPU-only locally)${RESET}"
+  echo -e "  ${GREEN}[2]${RESET} ${BOLD}local-gpu${RESET} — ${BOLD}Local Machine GPU${RESET} ${DIM}(uses local CUDA/MPS GPU if active)${RESET}"
+  if [[ "$TIER" == "free" ]]; then
+    echo -e "  ${DARK}[3]${RESET} ${BOLD}cpu${RESET}       — ${BOLD}Google Colab CPU (Free Tier: 12h session)${RESET}"
+  else
+    echo -e "  ${DARK}[3]${RESET} ${BOLD}cpu${RESET}       — ${BOLD}Google Colab CPU${RESET}"
+  fi
+  print_gpu_option "4" "t4       " "Google Colab GPU: T4 (16 GB VRAM)" "T4"
+  print_gpu_option "5" "l4       " "Google Colab GPU: L4 (24 GB VRAM)" "L4"
+  print_gpu_option "6" "g4       " "Google Colab GPU: G4" "G4"
+  print_gpu_option "7" "a100     " "Google Colab GPU: A100" "A100"
+  print_gpu_option "8" "h100     " "Google Colab GPU: H100" "H100"
+  if is_tpu_eligible "V5E1" || is_tpu_eligible "V6E1"; then
+    echo -e "  ${DARK}[9]${RESET} ${BOLD}v5e1/v6e1${RESET} — ${BOLD}Google Colab TPU (enter v5e1 or v6e1)${RESET}"
+  else
+    echo -e "  ${GREY}[9] v5e1/v6e1 — Google Colab TPU (Unavailable — requires Colab Pro / Compute Units)${RESET}"
+  fi
+  echo -e "  ${YELLOW}[0]${RESET} ${BOLD}stop${RESET}      — Stop All Active Colab VMs"
+  echo -e "${CYAN}==========================================================================${RESET}"
   read -r -p "Choose runtime [1-9, 0, or name] (Enter to cancel): " TARGET_ARG
   if [[ -z "$TARGET_ARG" ]]; then
     echo -e "${DIM}[/switch] Cancelled.${RESET}"
@@ -209,6 +325,7 @@ case "$NORM" in
   0|stop|off)
     stop_all_sessions
     fetch_colab_info
+    SESSION_START_EPOCH="0"
     write_state "$CUR_MODE" "$CUR_HW" "$CUR_HIGH_MEM" "$CUR_LOCAL_DEV"
     exit 0
     ;;
@@ -262,12 +379,31 @@ case "$NORM" in
     ;;
 esac
 
+if [[ "$NEW_MODE" == "colab" ]]; then
+  if [[ "$NEW_HW" == gpu:* ]]; then
+    req_gpu="${NEW_HW#gpu:}"
+    if [[ -n "$EMAIL" ]] && ! is_gpu_eligible "$req_gpu"; then
+      echo -e "${RED}[/switch] '${req_gpu}' is unavailable on your current Colab tier (${TIER}).${RESET}" >&2
+      echo -e "${YELLOW}[/switch] Available runtimes: local-cpu, local-gpu, cpu${ELIGIBLE_GPUS:+, ${ELIGIBLE_GPUS}}${ELIGIBLE_TPUS:+, ${ELIGIBLE_TPUS}}${RESET}" >&2
+      exit 2
+    fi
+  elif [[ "$NEW_HW" == tpu:* ]]; then
+    req_tpu="${NEW_HW#tpu:}"
+    if [[ -n "$EMAIL" ]] && ! is_tpu_eligible "$req_tpu"; then
+      echo -e "${RED}[/switch] TPU '${req_tpu}' is unavailable on your current Colab tier (${TIER}).${RESET}" >&2
+      echo -e "${YELLOW}[/switch] Available runtimes: local-cpu, local-gpu, cpu${ELIGIBLE_GPUS:+, ${ELIGIBLE_GPUS}}${ELIGIBLE_TPUS:+, ${ELIGIBLE_TPUS}}${RESET}" >&2
+      exit 2
+    fi
+  fi
+fi
+
 if [[ "$NEW_MODE" == "colab" && -z "$EMAIL" ]]; then
   echo -e "${YELLOW}[/switch] Warning: Not signed in to Colab CLI yet. Run ${BOLD}/login${RESET}${YELLOW} before running code on Colab.${RESET}"
 fi
 
 write_state "$NEW_MODE" "$NEW_HW" "$NEW_HIMEM" "$NEW_LOCAL_DEV"
 NEW_LABEL="$(format_hw_label "$NEW_MODE" "$NEW_HW" "$NEW_HIMEM" "$NEW_LOCAL_DEV")"
+QUOTA_OUT="$(quota_summary_text "$NEW_HW")"
 
 if [[ "$NEW_MODE" == "local" ]]; then
   if [[ "$NEW_LOCAL_DEV" == "gpu" ]]; then
@@ -275,20 +411,20 @@ if [[ "$NEW_MODE" == "local" ]]; then
     probe_state="${local_gpu_probe%%:*}"
     probe_detail="${local_gpu_probe#*:}"
     if [[ "$probe_state" == "ACTIVE" ]]; then
-      echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE GPU (${probe_detail})${RESET} | Colab Credits: ${YELLOW}${BALANCE}${RESET} (${RATE})"
+      echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE GPU (${probe_detail})${RESET} | ${YELLOW}${QUOTA_OUT}${RESET}"
     elif [[ "$probe_state" == "INACTIVE" ]]; then
-      echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE GPU${RESET} | Colab Credits: ${YELLOW}${BALANCE}${RESET} (${RATE})"
+      echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE GPU${RESET} | ${YELLOW}${QUOTA_OUT}${RESET}"
       echo -e "${YELLOW}[/switch] Note: PCI GPU detected (${probe_detail}), but NVIDIA/CUDA driver is not active right now — PyTorch will fall back to CPU unless CUDA driver is installed/loaded.${RESET}"
     else
-      echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE GPU${RESET} | Colab Credits: ${YELLOW}${BALANCE}${RESET} (${RATE})"
+      echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE GPU${RESET} | ${YELLOW}${QUOTA_OUT}${RESET}"
       echo -e "${YELLOW}[/switch] Note: No NVIDIA CUDA GPU detected locally; scripts will fall back to CPU.${RESET}"
     fi
   else
-    echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE CPU${RESET} (CUDA disabled locally) | Colab Credits: ${YELLOW}${BALANCE}${RESET} (${RATE})"
+    echo -e "${GREEN}[/switch]${RESET} Active runtime -> ${GREEN}${BOLD}LOCAL MACHINE CPU${RESET} (CUDA disabled locally) | ${YELLOW}${QUOTA_OUT}${RESET}"
   fi
   if [[ "$ACTIVE_VMS" =~ ^[0-9]+$ && "$ACTIVE_VMS" -gt 0 ]]; then
     echo -e "${YELLOW}[/switch] Note: You still have ${ACTIVE_VMS} active Colab VM(s) running. Run ${BOLD}/stop${RESET}${YELLOW} to release them.${RESET}"
   fi
 else
-  echo -e "${MAGENTA}[/switch]${RESET} Active runtime -> ${MAGENTA}${BOLD}${NEW_LABEL}${RESET} | Colab Credits: ${YELLOW}${BALANCE}${RESET} (${RATE})"
+  echo -e "${MAGENTA}[/switch]${RESET} Active runtime -> ${MAGENTA}${BOLD}${NEW_LABEL}${RESET} | ${YELLOW}${QUOTA_OUT}${RESET}"
 fi

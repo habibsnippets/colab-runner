@@ -9,6 +9,7 @@ rm -f \
   "$HOME/.local/bin/colab-login" \
   "$HOME/.local/bin/colab-logout" \
   "$HOME/.local/bin/colab-status" \
+  "$HOME/.local/bin/colab-on-close" \
   "$HOME/.config/colab-cli/shell-init.sh" \
   "$HOME/.config/colab-cli/vscode-runner-state.env"
 

@@ -77,9 +77,11 @@ echo -e "${CYAN}==> Step 2/4: Installing colab-runner scripts & commands...${RES
 mkdir -p "$SCRIPTS_DIR/py_ipv4"
 SCRIPT_FILES=(
   "colab-auth.sh"
+  "colab-on-close.sh"
   "colab-shell-init.sh"
   "colab-switch.sh"
   "colab-terminal-runner.sh"
+  "colab-tier-info.py"
   "local-ipynb-runner.py"
   "py_ipv4/sitecustomize.py"
 )
@@ -106,6 +108,7 @@ ln -sf "$SCRIPTS_DIR/colab-terminal-runner.sh" "$BIN_DIR/colab-runner"
 ln -sf "$SCRIPTS_DIR/colab-auth.sh" "$BIN_DIR/colab-login"
 ln -sf "$SCRIPTS_DIR/colab-auth.sh" "$BIN_DIR/colab-logout"
 ln -sf "$SCRIPTS_DIR/colab-auth.sh" "$BIN_DIR/colab-status"
+ln -sf "$SCRIPTS_DIR/colab-on-close.sh" "$BIN_DIR/colab-on-close"
 
 # 3. Configure shell integration (/switch, /run, /login, /status, /stop, prompt badge)
 echo -e "${CYAN}==> Step 3/4: Configuring Bash slash commands (/switch, /run, /login, /help)...${RESET}"

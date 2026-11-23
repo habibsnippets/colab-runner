@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+*.pyc
 *.log
 examples/*_output.ipynb
 examples/*_local_output.ipynb

@@ -8,11 +8,18 @@ A lightweight, CLI-first workflow (plus optional VS Code extension) to seamlessl
 
 ## Features
 
-- **Slash commands in any Bash terminal:** Switch between Local CPU, Colab CPU, and Colab GPUs/TPUs with `/switch`.
-- **Transparent `python` routing:** Once you `/switch t4` (or `/switch cpu`, `/switch local`), running either `/run script.py` or `python script.py` / `python notebook.ipynb` automatically executes on the active hardware.
-- **Persistent prompt indicator:** Your active hardware and remaining Colab compute units stay visible in your terminal prompt across `clear`, `Ctrl+L`, and VS Code's **Clear Terminal** button.
+- **Slash commands in any Bash terminal:** Switch between Local CPU, Local GPU, Colab CPU, and Colab GPUs/TPUs with `/switch`.
+- **Tier-aware `/switch` & Free-Tier session hours:**
+  - Automatically detects your Colab account tier via `/tun/m/ccu-info`.
+  - **Free-Tier users** see their **remaining session hours** (e.g. `Free: 3h 48m left` on T4 GPU's 4h limit / `12h` on CPU) instead of `0.00 CU`.
+  - In `/switch`, runtimes available to your account (`Local CPU`, `Local GPU`, `Colab CPU`, and `T4` on Free Tier) appear in bold dark colors, while Pro-only GPUs/TPUs (`L4`, `G4`, `A100`, `H100`, `TPU`) appear greyed out.
+- **Transparent `python` routing:** Once you `/switch t4` (or `/switch cpu`, `/switch local-cpu`, `/switch local-gpu`), running either `/run script.py` or `python script.py` / `python notebook.ipynb` automatically executes on the active hardware.
+- **Persistent prompt indicator:** Your active hardware and remaining Colab quota/credits stay visible in your terminal prompt across `clear`, `Ctrl+L`, and VS Code's **Clear Terminal** button.
 - **Terminal-native Google Colab auth:** Connect, switch accounts, or sign out cleanly in the terminal via `/login`, `/login --switch`, and `/logout`.
-- **Compute-unit safety:** Switching runtimes automatically stops previous `vscode-*` Colab VMs, and `/stop` tears down all active Colab sessions so you don't burn idle credits.
+- **Compute-unit & close safety:**
+  - Switching runtimes automatically stops previous `vscode-*` Colab VMs, and `/stop` tears down all active Colab sessions.
+  - Typing `exit` in a terminal with an active Colab VM warns you and prompts to stop VMs first.
+  - Closing a terminal in VS Code triggers a modal warning popup; closing VS Code or force-closing a terminal (`SIGHUP`) automatically terminates all active Colab VMs in the background and fires a desktop notification so credits don't burn.
 
 ![Switching Runtimes in VS Code Terminal](assets/colab-runner-switch.png)
 

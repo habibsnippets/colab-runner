@@ -1,10 +1,12 @@
 const vscode = require('vscode');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const TERMINAL_NAME = 'Colab / Local Runner';
+let extensionRootPath = '';
+let closePromptInFlight = false;
 
 function buildEnv() {
   const home = os.homedir();
@@ -47,7 +49,8 @@ function installCliHelpers(extensionPath) {
       ['colab-terminal-runner.sh', 'colab-runner'],
       ['colab-auth.sh', 'colab-login'],
       ['colab-auth.sh', 'colab-logout'],
-      ['colab-auth.sh', 'colab-status']
+      ['colab-auth.sh', 'colab-status'],
+      ['colab-on-close.sh', 'colab-on-close']
     ];
     for (const [srcName, binName] of symlinks) {
       const target = path.join(scriptsDir, srcName);
@@ -129,7 +132,55 @@ function openTerminalCommand(extensionPath) {
   term.sendText('/help', true);
 }
 
+function hasActiveColabSession() {
+  const configDir = path.join(os.homedir(), '.config', 'colab-cli');
+  const stateFile = path.join(configDir, 'vscode-runner-state.env');
+  const sessionsFile = path.join(configDir, 'sessions.json');
+
+  try {
+    if (fs.existsSync(stateFile)) {
+      const raw = fs.readFileSync(stateFile, 'utf8');
+      const m = raw.match(/^COLAB_RUNNER_ACTIVE_VMS=['"]?(\d+)['"]?/m);
+      if (m && parseInt(m[1], 10) > 0) {
+        return true;
+      }
+    }
+  } catch (_) {
+    // Ignore parse errors
+  }
+
+  try {
+    if (fs.existsSync(sessionsFile)) {
+      const trimmed = fs.readFileSync(sessionsFile, 'utf8').trim();
+      if (trimmed && trimmed !== '{}' && trimmed !== '[]') {
+        return true;
+      }
+    }
+  } catch (_) {
+    // Ignore read errors
+  }
+
+  return false;
+}
+
+function stopActiveColabVMs() {
+  return new Promise((resolve) => {
+    const switchBin = path.join(os.homedir(), '.local', 'bin', 'colab-switch');
+    const fallbackScript = extensionRootPath ? path.join(extensionRootPath, 'scripts', 'colab-switch.sh') : '';
+    const cmd = fs.existsSync(switchBin) ? switchBin : fallbackScript;
+    if (!cmd || !fs.existsSync(cmd)) {
+      resolve(false);
+      return;
+    }
+    const child = execFile(cmd, ['--stop'], { env: buildEnv(), timeout: 30000 }, (err) => {
+      resolve(!err);
+    });
+    if (child && child.stdin) child.stdin.end();
+  });
+}
+
 function activate(context) {
+  extensionRootPath = context.extensionPath;
   installCliHelpers(context.extensionPath);
 
   // Sync Colab status silently into state file on startup
@@ -141,11 +192,53 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('colabRunner.runFile', (uri) => runFileCommand(context.extensionPath, uri)),
-    vscode.commands.registerCommand('colabRunner.openTerminal', () => openTerminalCommand(context.extensionPath))
+    vscode.commands.registerCommand('colabRunner.openTerminal', () => openTerminalCommand(context.extensionPath)),
+    vscode.window.onDidCloseTerminal(async () => {
+      if (closePromptInFlight || !hasActiveColabSession()) return;
+      closePromptInFlight = true;
+      try {
+        const choice = await vscode.window.showWarningMessage(
+          'Active Colab VM(s) are still running! Stop them now — otherwise your Colab credits / session hours will keep burning.',
+          { modal: true },
+          'Stop All Colab VMs Now',
+          'Keep Running'
+        );
+        if (choice === 'Stop All Colab VMs Now') {
+          await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: 'Stopping all active Colab VMs...',
+              cancellable: false
+            },
+            () => stopActiveColabVMs()
+          );
+          vscode.window.showInformationMessage('All active Colab VMs have been stopped.');
+        }
+      } finally {
+        closePromptInFlight = false;
+      }
+    })
   );
 }
 
-function deactivate() {}
+function deactivate() {
+  if (!hasActiveColabSession()) return;
+  const onCloseBin = path.join(os.homedir(), '.local', 'bin', 'colab-on-close');
+  const fallbackScript = extensionRootPath ? path.join(extensionRootPath, 'scripts', 'colab-on-close.sh') : '';
+  const cmd = fs.existsSync(onCloseBin) ? onCloseBin : fallbackScript;
+  if (!cmd || !fs.existsSync(cmd)) return;
+
+  try {
+    const child = spawn(cmd, [], {
+      detached: true,
+      stdio: 'ignore',
+      env: buildEnv()
+    });
+    child.unref();
+  } catch (_) {
+    // Non-fatal
+  }
+}
 
 module.exports = {
   activate,

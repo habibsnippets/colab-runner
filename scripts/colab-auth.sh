@@ -18,10 +18,25 @@ run_colab() {
   fi
 }
 
+run_tier_info() {
+  local py_bin="python3"
+  if [[ -f "$COLAB_BIN" ]]; then
+    local shebang_py
+    shebang_py="$(head -n 1 "$COLAB_BIN" 2>/dev/null | sed 's/^#!//' | awk '{print $1}')"
+    if [[ -n "$shebang_py" && -x "$shebang_py" ]]; then
+      py_bin="$shebang_py"
+    fi
+  fi
+  if [[ -d "$SCRIPT_DIR/py_ipv4" ]]; then
+    PYTHONPATH="$SCRIPT_DIR/py_ipv4${PYTHONPATH:+:$PYTHONPATH}" "$py_bin" "$SCRIPT_DIR/colab-tier-info.py" </dev/null 2>/dev/null || true
+  else
+    "$py_bin" "$SCRIPT_DIR/colab-tier-info.py" </dev/null 2>/dev/null || true
+  fi
+}
+
 BOLD="\033[1m"
 CYAN="\033[1;36m"
 GREEN="\033[1;32m"
-MAGENTA="\033[1;35m"
 YELLOW="\033[1;33m"
 RED="\033[1;31m"
 DIM="\033[2m"
@@ -47,7 +62,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage:"
       echo "  colab-login [--switch] [--check]   Sign in or switch Google Colab account in terminal"
       echo "  colab-logout                       Sign out and clear Colab CLI credentials"
-      echo "  colab-status                       Show account, credits, active VMs & sync VS Code"
+      echo "  colab-status                       Show account, credits/session hours, active VMs & sync VS Code"
       exit 0
       ;;
     *) echo -e "${RED}[Colab Auth] Unknown option: $1${RESET}" >&2; exit 2 ;;
@@ -59,7 +74,15 @@ done
 clear_credentials() {
   rm -f "$LEGACY_TOKEN" 2>/dev/null || true
   local py_bin="python3"
-  [[ -x "$COLAB_PY" ]] && py_bin="$COLAB_PY"
+  if [[ -f "$COLAB_BIN" ]]; then
+    local shebang_py
+    shebang_py="$(head -n 1 "$COLAB_BIN" 2>/dev/null | sed 's/^#!//' | awk '{print $1}')"
+    if [[ -n "$shebang_py" && -x "$shebang_py" ]]; then
+      py_bin="$shebang_py"
+    fi
+  elif [[ -x "$COLAB_PY" ]]; then
+    py_bin="$COLAB_PY"
+  fi
   "$py_bin" - << 'EOF' 2>/dev/null || true
 try:
     import keyring
@@ -69,11 +92,30 @@ except Exception:
 EOF
 }
 
+format_remaining_time() {
+  local start_ep="$1" max_s="$2"
+  local now rem hrs mins
+  now="$(date +%s)"
+  rem=$(( max_s - (now - start_ep) ))
+  [[ "$rem" -lt 0 ]] && rem=0
+  hrs=$(( rem / 3600 ))
+  mins=$(( (rem % 3600) / 60 ))
+  if [[ "$hrs" -gt 0 ]]; then
+    echo "${hrs}h ${mins}m left"
+  else
+    echo "${mins}m left"
+  fi
+}
+
 write_state_env() {
   local email="$1"
-  local balance="$2"
-  local rate="$3"
-  local active_vms="$4"
+  local tier="$2"
+  local balance="$3"
+  local rate="$4"
+  local active_vms="$5"
+  local eligible_gpus="$6"
+  local eligible_tpus="$7"
+  local sess_epoch="$8"
 
   mkdir -p "$STATE_DIR"
 
@@ -93,10 +135,9 @@ write_state_env() {
     hw_label="${COLAB_RUNNER_HW_LABEL:-LOCAL CPU}"
   fi
 
-  local short_credits="${balance/ compute units/ CU}"
-  [[ -z "$short_credits" || "$short_credits" == "N/A" ]] && short_credits="?"
-  [[ -z "$rate" ]] && rate="0.00/hr"
-  [[ -z "$active_vms" ]] && active_vms="0"
+  local max_secs="14400"
+  [[ "$hardware" == "cpu" ]] && max_secs="43200"
+  [[ ! "$active_vms" =~ ^[0-9]+$ || "$active_vms" -eq 0 ]] && sess_epoch="0"
 
   cat > "$STATE_FILE" <<EOF
 COLAB_RUNNER_MODE='${mode}'
@@ -105,45 +146,81 @@ COLAB_RUNNER_LOCAL_DEVICE='${local_device}'
 COLAB_RUNNER_HIGH_MEM='${high_mem}'
 COLAB_RUNNER_HW_LABEL='${hw_label}'
 COLAB_RUNNER_EMAIL='${email}'
-COLAB_RUNNER_CREDITS='${short_credits}'
+COLAB_RUNNER_TIER='${tier}'
+COLAB_RUNNER_CREDITS='${balance} CU'
 COLAB_RUNNER_RATE='${rate}'
 COLAB_RUNNER_ACTIVE_VMS='${active_vms}'
+COLAB_RUNNER_ELIGIBLE_GPUS='${eligible_gpus}'
+COLAB_RUNNER_ELIGIBLE_TPUS='${eligible_tpus}'
+COLAB_RUNNER_SESSION_START_EPOCH='${sess_epoch}'
+COLAB_RUNNER_SESSION_MAX_SECS='${max_secs}'
 EOF
 }
 
 fetch_and_sync_status() {
   EMAIL=""
-  BALANCE="N/A"
+  TIER="free"
+  BALANCE="0.00"
   RATE="0.00/hr"
   ACTIVE_VMS="0"
+  ELIGIBLE_GPUS="T4"
+  ELIGIBLE_TPUS=""
+  SESSION_START_EPOCH="0"
   SESSIONS_OUT=""
 
-  if [[ ! -x "$COLAB_BIN" ]] && ! command -v "$COLAB_BIN" >/dev/null 2>&1; then
+  if [[ ! -x "$COLAB_BIN" ]] && ! command -v "$COLAB_BIN" >/dev/null 2>&1 && [[ "${COLAB_RUNNER_SIMULATE_FREE:-0}" != "1" ]]; then
     echo -e "${RED}[Colab Auth] 'colab' CLI not found.${RESET}" >&2
     return 1
   fi
 
-  local whoami_out usage_out
-  whoami_out="$(run_colab whoami </dev/null 2>/dev/null || true)"
-  EMAIL="$(echo "$whoami_out" | awk -F': *' '/^Email:/ {print $2; exit}')"
+  local info_out
+  info_out="$(run_tier_info)"
+  while IFS='=' read -r k v; do
+    case "$k" in
+      EMAIL) EMAIL="$v" ;;
+      TIER) TIER="$v" ;;
+      BALANCE) BALANCE="$v" ;;
+      RATE) RATE="$v" ;;
+      ACTIVE_VMS) ACTIVE_VMS="$v" ;;
+      ELIGIBLE_GPUS) ELIGIBLE_GPUS="$v" ;;
+      ELIGIBLE_TPUS) ELIGIBLE_TPUS="$v" ;;
+      SESSION_START_EPOCH) SESSION_START_EPOCH="$v" ;;
+    esac
+  done <<< "$info_out"
 
-  if [[ -n "$EMAIL" ]]; then
-    usage_out="$(run_colab usage </dev/null 2>/dev/null || true)"
+  if [[ -n "$EMAIL" ]] && [[ "${COLAB_RUNNER_SIMULATE_FREE:-0}" != "1" ]]; then
     SESSIONS_OUT="$(run_colab sessions </dev/null 2>/dev/null || true)"
-    BALANCE="$(echo "$usage_out" | awk -F': *' '/^Current balance:/ {print $2; exit}')"
-    RATE="$(echo "$usage_out" | awk -F': *' '/^Usage rate:/ {print $2; exit}')"
-    ACTIVE_VMS="$(echo "$usage_out" | awk -F': *' '/^Active assignments:/ {print $2; exit}')"
-    [[ -z "$BALANCE" ]] && BALANCE="?"
-    [[ -z "$RATE" ]] && RATE="0.00/hr"
-    [[ -z "$ACTIVE_VMS" ]] && ACTIVE_VMS="0"
   fi
 
-  write_state_env "$EMAIL" "$BALANCE" "$RATE" "$ACTIVE_VMS"
+  write_state_env "$EMAIL" "$TIER" "$BALANCE" "$RATE" "$ACTIVE_VMS" "$ELIGIBLE_GPUS" "$ELIGIBLE_TPUS" "$SESSION_START_EPOCH"
+}
+
+quota_line_for_display() {
+  if [[ "$TIER" == "paid" ]]; then
+    echo "${BALANCE} compute units | Burn Rate: ${RATE} | Active VMs: ${ACTIVE_VMS}"
+    return
+  fi
+  local hardware="cpu"
+  if [[ -f "$STATE_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$STATE_FILE" 2>/dev/null || true
+    hardware="${COLAB_RUNNER_HARDWARE:-cpu}"
+  fi
+  local max_s="14400" limit_label="4h max for T4 GPU"
+  if [[ "$hardware" == "cpu" ]]; then
+    max_s="43200"
+    limit_label="12h max for CPU"
+  fi
+  if [[ "$ACTIVE_VMS" =~ ^[0-9]+$ && "$ACTIVE_VMS" -gt 0 && "$SESSION_START_EPOCH" =~ ^[0-9]+$ && "$SESSION_START_EPOCH" -gt 0 ]]; then
+    echo "Free Tier — $(format_remaining_time "$SESSION_START_EPOCH" "$max_s") (${limit_label}) | Active VMs: ${ACTIVE_VMS}"
+  else
+    echo "Free Tier (4h T4 GPU / 12h CPU session limit) | Active VMs: ${ACTIVE_VMS}"
+  fi
 }
 
 if [[ "$ACTION" == "logout" ]]; then
   clear_credentials
-  write_state_env "" "N/A" "0.00/hr" "0"
+  write_state_env "" "free" "0.00" "0.00/hr" "0" "T4" "" "0"
   echo ""
   echo -e "${YELLOW}======================================================================${RESET}"
   echo -e " ${YELLOW}COLAB ACCOUNT SIGNED OUT${RESET}"
@@ -159,9 +236,14 @@ if [[ "$ACTION" == "status" ]]; then
   echo ""
   echo -e "${CYAN}======================================================================${RESET}"
   if [[ -n "$EMAIL" ]]; then
-    echo -e " ${GREEN}COLAB ACCOUNT STATUS :${RESET} ${BOLD}SIGNED IN${RESET}"
+    echo -e " ${GREEN}COLAB ACCOUNT STATUS :${RESET} ${BOLD}SIGNED IN (${TIER^^} TIER)${RESET}"
     echo -e " ${CYAN}GOOGLE ACCOUNT       :${RESET} ${EMAIL}"
-    echo -e " ${YELLOW}REMAINING CREDITS    :${RESET} ${BALANCE} | Burn Rate: ${RATE} | Active VMs: ${ACTIVE_VMS}"
+    if [[ "$TIER" == "paid" ]]; then
+      echo -e " ${YELLOW}REMAINING CREDITS    :${RESET} $(quota_line_for_display)"
+    else
+      echo -e " ${YELLOW}SESSION QUOTA        :${RESET} $(quota_line_for_display)"
+    fi
+    echo -e " ${CYAN}ELIGIBLE RUNTIMES    :${RESET} Local CPU, Local GPU, Colab CPU${ELIGIBLE_GPUS:+, ${ELIGIBLE_GPUS}}${ELIGIBLE_TPUS:+, ${ELIGIBLE_TPUS}}"
     if [[ -n "$SESSIONS_OUT" ]]; then
       echo -e " ${CYAN}SESSIONS             :${RESET}"
       while IFS= read -r line; do
@@ -170,7 +252,7 @@ if [[ "$ACTION" == "status" ]]; then
     fi
   else
     echo -e " ${RED}COLAB ACCOUNT STATUS :${RESET} ${BOLD}SIGNED OUT${RESET}"
-    echo -e " ${CYAN}Run ${BOLD}colab-login${RESET}${CYAN} in this terminal to connect your Google account.${RESET}"
+    echo -e " ${CYAN}Run ${BOLD}/login${RESET}${CYAN} in this terminal to connect your Google account.${RESET}"
   fi
   echo -e "${CYAN}======================================================================${RESET}"
   echo ""
@@ -181,10 +263,10 @@ fi
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   fetch_and_sync_status
   if [[ -n "$EMAIL" ]]; then
-    echo -e "${GREEN}[Colab Auth]${RESET} Signed in as ${BOLD}${EMAIL}${RESET} | Credits: ${YELLOW}${BALANCE}${RESET} (${RATE})"
+    echo -e "${GREEN}[Colab Auth]${RESET} Signed in as ${BOLD}${EMAIL}${RESET} | ${YELLOW}$(quota_line_for_display)${RESET}"
     exit 0
   else
-    echo -e "${RED}[Colab Auth]${RESET} Not signed in. Run ${BOLD}colab-login${RESET} to authenticate."
+    echo -e "${RED}[Colab Auth]${RESET} Not signed in. Run ${BOLD}/login${RESET} to authenticate."
     exit 1
   fi
 fi
@@ -192,18 +274,17 @@ fi
 if [[ "$SWITCH_ACCOUNT" -eq 1 ]]; then
   echo -e "${YELLOW}[Colab Auth] Clearing existing Colab credentials to switch account...${RESET}"
   clear_credentials
-  write_state_env "" "N/A" "0.00/hr" "0"
+  write_state_env "" "free" "0.00" "0.00/hr" "0" "T4" "" "0"
 else
-  # Check if already signed in
   fetch_and_sync_status
   if [[ -n "$EMAIL" ]]; then
     echo ""
-    echo -e "${GREEN}[Colab Auth] Already signed in as ${BOLD}${EMAIL}${RESET} (${BALANCE})."
+    echo -e "${GREEN}[Colab Auth] Already signed in as ${BOLD}${EMAIL}${RESET} ($(quota_line_for_display))."
     read -r -p "Switch to a different Google account? [y/N]: " reply
     case "$reply" in
       [yY]|[yY][eE][sS])
         clear_credentials
-        write_state_env "" "N/A" "0.00/hr" "0"
+        write_state_env "" "free" "0.00" "0.00/hr" "0" "T4" "" "0"
         ;;
       *)
         echo -e "${CYAN}[Colab Auth] Keeping active account (${EMAIL}).${RESET}"
@@ -232,9 +313,10 @@ fetch_and_sync_status
 if [[ -n "$EMAIL" ]]; then
   echo ""
   echo -e "${GREEN}======================================================================${RESET}"
-  echo -e " ${GREEN}SIGN-IN SUCCESSFUL${RESET}"
+  echo -e " ${GREEN}SIGN-IN SUCCESSFUL (${TIER^^} TIER)${RESET}"
   echo -e " ${CYAN}GOOGLE ACCOUNT    :${RESET} ${BOLD}${EMAIL}${RESET}"
-  echo -e " ${YELLOW}REMAINING CREDITS :${RESET} ${BALANCE} | Burn Rate: ${RATE} | Active VMs: ${ACTIVE_VMS}"
+  echo -e " ${YELLOW}QUOTA             :${RESET} $(quota_line_for_display)"
+  echo -e " ${CYAN}ELIGIBLE RUNTIMES :${RESET} Local CPU, Local GPU, Colab CPU${ELIGIBLE_GPUS:+, ${ELIGIBLE_GPUS}}${ELIGIBLE_TPUS:+, ${ELIGIBLE_TPUS}}"
   echo -e "${GREEN}======================================================================${RESET}"
   echo ""
   exit 0
