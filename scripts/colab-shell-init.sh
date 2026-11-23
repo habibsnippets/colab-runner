@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Colab & Local Runner CLI shell integration.
 # Provides /switch, /run, /login, /logout, /status, /stop, /help,
 # smart `python <file.py|file.ipynb>` routing, and a persistent prompt badge.
