@@ -1,0 +1,4 @@
+node_modules/
+*.log
+examples/*_output.ipynb
+examples/*_local_output.ipynb

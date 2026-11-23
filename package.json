@@ -1,0 +1,48 @@
+{
+  "name": "colab-vscode-runner",
+  "displayName": "Colab & Local CLI Runner",
+  "description": "CLI-first Google Colab & Local runner for VS Code terminals with /switch, /run, /login, /logout, /status, /stop, and persistent runtime + credit status in your terminal prompt.",
+  "version": "0.3.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning",
+    "Notebooks"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "colabRunner.runFile",
+        "title": "Run Active File via /run",
+        "category": "Colab Runner"
+      },
+      {
+        "command": "colabRunner.openTerminal",
+        "title": "Open Colab / Local CLI Terminal",
+        "category": "Colab Runner"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "colabRunner.runFile",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus && (resourceExtname == .py || resourceExtname == .ipynb)"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce package --allow-missing-repository --no-dependencies"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/habibsnippets/colab-runner.git"
+  }
+}
