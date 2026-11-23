@@ -13,6 +13,7 @@ A lightweight, CLI-first workflow (plus optional VS Code extension) to seamlessl
   - Automatically detects your Colab account tier via `/tun/m/ccu-info`.
   - **Free-Tier users** see their **remaining session hours** (e.g. `Free: 3h 48m left` on T4 GPU's 4h limit / `12h` on CPU) instead of `0.00 CU`.
   - In `/switch`, runtimes available to your account (`Local CPU`, `Local GPU`, `Colab CPU`, and `T4` on Free Tier) appear in bold dark colors, while Pro-only GPUs/TPUs (`L4`, `G4`, `A100`, `H100`, `TPU`) appear greyed out.
+- **Automatic next-best GPU fallback:** If your selected Colab GPU (e.g. `A100`) is temporarily at capacity on Google Colab (`503 Service Unavailable`), `colab-runner` immediately informs you in the terminal and automatically connects to the **next best available eligible GPU** (`H100 → A100 → L4 → G4 → T4`), updating your prompt badge to the connected GPU.
 - **Transparent `python` routing:** Once you `/switch t4` (or `/switch cpu`, `/switch local-cpu`, `/switch local-gpu`), running either `/run script.py` or `python script.py` / `python notebook.ipynb` automatically executes on the active hardware.
 - **Persistent prompt indicator:** Your active hardware and remaining Colab quota/credits stay visible in your terminal prompt across `clear`, `Ctrl+L`, and VS Code's **Clear Terminal** button.
 - **Terminal-native Google Colab auth:** Connect, switch accounts, or sign out cleanly in the terminal via `/login`, `/login --switch`, and `/logout`.
@@ -102,15 +103,20 @@ source ~/.bashrc
 
 ---
 
-## Sample Hardware Benchmark (`examples/benchmark_hardware.py`)
+## Hardware Verification & Benchmark Results (`examples/benchmark_hardware.py`)
 
 Run `python examples/benchmark_hardware.py` across runtimes to verify active hardware and measure latency:
 
-| Benchmark | Local Machine CPU (`i5-1135G7`) | Google Colab CPU (`Xeon @ 2.20GHz`) | Google Colab GPU (`Tesla T4`, 16 GB) |
-| :--- | :---: | :---: | :---: |
-| **`4096×4096` FP32 MatMul (Mean)** | `356.87 ms` (`385.1 GFLOPS`) | `2245.33 ms` (`61.2 GFLOPS`) | **`33.55 ms` (`4096.3 GFLOPS`)** |
-| **3-Layer MLP Forward (`B=2048`)** | `494.93 ms` | `2889.66 ms` | **`41.19 ms`** |
-| **Elementwise Ops (`16.7M` floats)** | `79.19 ms` | `283.61 ms` | **`3.46 ms`** |
+| Runtime | Status & Detected Hardware | `4096×4096` FP32 MatMul (Mean) | Throughput | 3-Layer MLP (`B=2048`) | Elementwise (`16.7M`) | Speedup vs Local CPU |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Local Machine CPU** (`local-cpu`) | Verified — `Intel Core i5-1135G7 @ 2.40GHz` (8 cores, `15.4 GB` RAM) | `356.87 ms` | `385.1 GFLOPS` | `494.93 ms` | `79.19 ms` | `1.0×` (Baseline) |
+| **Local Machine GPU** (`local-gpu`) | Verified — Detected `NVIDIA GeForce MX350` & `Intel Iris Xe` on PCI; CUDA driver inactive (`2.15.0+cpu`), clean CPU fallback | `363.29 ms` | `378.3 GFLOPS` | `449.98 ms` | `62.91 ms` | `~1.0×` (CPU fallback) |
+| **Google Colab CPU** (`cpu`) | Verified — `Intel Xeon @ 2.20GHz` (2 cores, `12.7 GB` RAM, `2.14.1+cpu`) | `2245.33 ms` | `61.2 GFLOPS` | `2889.66 ms` | `283.61 ms` | `0.16×` (`6.3×` slower) |
+| **Google Colab `T4`** (`t4`) | Verified — **`NVIDIA Tesla T4`** (`15360 MiB`, CUDA `13.0`, `2.14.1+cu130`) | **`33.55 ms`** | **`4096.3 GFLOPS`** | **`41.19 ms`** | **`3.46 ms`** | **`10.6×` MatMul / `22.9×` Elem** |
+| **Google Colab `L4`** (`l4`) | Eligible (`200 CU` tier); `POST /tun/m/assign` returned HTTP `503 Service Unavailable` (regional capacity) | — | — | — | — | — |
+| **Google Colab `G4`** (`g4`) | Eligible (`200 CU` tier); `POST /tun/m/assign` returned HTTP `503 Service Unavailable` (regional capacity) | — | — | — | — | — |
+| **Google Colab `A100`** (`a100`) | Eligible (`200 CU` tier); `POST /tun/m/assign` returned HTTP `503 Service Unavailable` (regional capacity) | — | — | — | — | — |
+| **Google Colab `H100`** (`h100`) | Ineligible on account tier (`/tun/m/ccu-info`: `ineligibleGpus: ["H100"]`) | — | — | — | — | — |
 
 ---
 

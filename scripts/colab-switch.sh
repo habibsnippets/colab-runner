@@ -170,7 +170,7 @@ stop_all_sessions() {
   while IFS= read -r line; do
     if [[ "$line" =~ ^\[([^\]]+)\][[:space:]] ]]; then
       local s_name="${BASH_REMATCH[1]}"
-      if [[ "$s_name" != "?" ]]; then
+      if [[ "$s_name" != "?" && "$s_name" != "colab" ]]; then
         echo -e "${YELLOW}[Colab] Stopping session '${s_name}'...${RESET}"
         run_colab stop -s "$s_name" </dev/null || true
         stopped=1

@@ -45,9 +45,11 @@ run_colab() {
 
 run_tier_info() {
   local py_bin="python3"
-  if [[ -f "$COLAB_BIN" ]]; then
+  local colab_resolved=""
+  colab_resolved="$(command -v "$COLAB_BIN" 2>/dev/null || echo "$COLAB_BIN")"
+  if [[ -f "$colab_resolved" ]]; then
     local shebang_py
-    shebang_py="$(head -n 1 "$COLAB_BIN" 2>/dev/null | sed 's/^#!//' | awk '{print $1}')"
+    shebang_py="$(head -n 1 "$colab_resolved" 2>/dev/null | sed 's/^#!//' | awk '{print $1}')"
     if [[ -n "$shebang_py" && -x "$shebang_py" ]]; then
       py_bin="$shebang_py"
     fi
@@ -340,22 +342,133 @@ if [[ "$AUTO_STOP_PREV" -eq 1 && ${#OTHER_VSCODE_SESSIONS[@]} -gt 0 ]]; then
   SESSION_START_EPOCH="0"
 fi
 
+build_gpu_fallback_chain() {
+  local req_upper
+  req_upper="$(echo "$1" | tr '[:lower:]' '[:upper:]')"
+  local all_ranked=("H100" "A100" "L4" "G4" "T4")
+  local chain=("$req_upper")
+  local seen=",${req_upper},"
+
+  # Find index of requested GPU in ranked order
+  local req_idx=0 i=0
+  for g in "${all_ranked[@]}"; do
+    if [[ "$g" == "$req_upper" ]]; then
+      req_idx=$i
+      break
+    fi
+    i=$((i + 1))
+  done
+
+  # 1) Add lower/next-best eligible GPUs first (e.g. A100 -> L4 -> G4 -> T4)
+  for (( idx=req_idx+1; idx<${#all_ranked[@]}; idx++ )); do
+    local cand="${all_ranked[$idx]}"
+    if [[ ",${COLAB_ELIGIBLE_GPUS}," == *",${cand},"* && "$seen" != *",${cand},"* ]]; then
+      chain+=("$cand")
+      seen="${seen}${cand},"
+    fi
+  done
+
+  # 2) Add any remaining eligible GPUs above requested (e.g. if user requested G4, also try L4)
+  for (( idx=req_idx-1; idx>=0; idx-- )); do
+    local cand="${all_ranked[$idx]}"
+    if [[ ",${COLAB_ELIGIBLE_GPUS}," == *",${cand},"* && "$seen" != *",${cand},"* ]]; then
+      chain+=("$cand")
+      seen="${seen}${cand},"
+    fi
+  done
+
+  echo "${chain[*]}"
+}
+
+summarize_assign_error() {
+  local out="$1"
+  if [[ "$out" == *"Service Unavailable"* || "$out" == *"503"* ]]; then
+    echo "at capacity / 503 Service Unavailable on Google Colab"
+  elif [[ "$out" == *"TooManyAssignmentsError"* || "$out" == *"412"* ]]; then
+    echo "assignment/quota limit reached (HTTP 412)"
+  elif [[ "$out" == *"400"* || "$out" == *"403"* ]]; then
+    echo "not entitled on current Colab tier"
+  else
+    echo "backend allocation failed"
+  fi
+}
+
 if [[ "$HAS_TARGET_SESSION" -eq 0 ]]; then
-  NEW_ARGS=(new -s "$SESSION_NAME")
-  case "$HARDWARE" in
-    cpu) ;;
-    gpu:*) NEW_ARGS+=(--gpu "${HARDWARE#gpu:}") ;;
-    tpu:*) NEW_ARGS+=(--tpu "${HARDWARE#tpu:}") ;;
-  esac
-  if [[ "$HIGH_MEM" -eq 1 ]]; then
-    NEW_ARGS+=(--high-mem)
+  if [[ "$HARDWARE" == gpu:* ]]; then
+    REQ_GPU="${HARDWARE#gpu:}"
+    read -r -a GPU_CANDIDATES <<< "$(build_gpu_fallback_chain "$REQ_GPU")"
+    PROVISIONED_OK=0
+    TOTAL_CANDS="${#GPU_CANDIDATES[@]}"
+
+    for (( c_idx=0; c_idx<TOTAL_CANDS; c_idx++ )); do
+      CAND_GPU="${GPU_CANDIDATES[$c_idx]}"
+      CAND_HW="gpu:${CAND_GPU}"
+      CAND_LABEL="$(format_hardware_label "$CAND_HW")"
+      CAND_SESSION="$(session_name_for_hw "$CAND_HW")"
+
+      NEW_ARGS=(new -s "$CAND_SESSION" --gpu "$CAND_GPU")
+      if [[ "$HIGH_MEM" -eq 1 && "$CAND_GPU" != "L4" ]]; then
+        NEW_ARGS+=(--high-mem)
+      fi
+
+      echo -e "${CYAN}[Colab Runner] Requesting Colab runtime (${CAND_LABEL})...${RESET}"
+      ASSIGN_OUT="$(COLAB_CLI_ASSIGN_RETRIES=1 COLAB_CLI_RETRY_BACKOFF=3 run_colab "${NEW_ARGS[@]}" 2>&1)"
+      ASSIGN_RC=$?
+
+      if [[ "$ASSIGN_RC" -eq 0 ]]; then
+        echo -e "${GREEN}[colab] Session '${CAND_SESSION}' READY.${RESET}"
+        if [[ "$CAND_GPU" != "$REQ_GPU" ]]; then
+          echo -e "${GREEN}${BOLD}[Colab Runner] '${REQ_GPU}' was unavailable — automatically connected to next best available GPU: ${CAND_LABEL}${RESET}"
+        fi
+        HARDWARE="$CAND_HW"
+        HW_LABEL="$CAND_LABEL"
+        SESSION_NAME="$CAND_SESSION"
+        SESSION_START_EPOCH="$(date +%s)"
+        write_runner_state
+        PROVISIONED_OK=1
+        break
+      else
+        REASON="$(summarize_assign_error "$ASSIGN_OUT")"
+        echo -e "${YELLOW}[Colab Runner] Colab GPU '${CAND_GPU}' is currently unavailable (${REASON}).${RESET}"
+        next_idx=$((c_idx + 1))
+        if [[ "$next_idx" -lt "$TOTAL_CANDS" ]]; then
+          NEXT_GPU="${GPU_CANDIDATES[$next_idx]}"
+          echo -e "${CYAN}[Colab Runner] Automatically trying next best available GPU: COLAB GPU — ${NEXT_GPU}...${RESET}"
+        fi
+      fi
+    done
+
+    if [[ "$PROVISIONED_OK" -eq 0 ]]; then
+      TRIED_STR="$(IFS=' -> '; echo "${GPU_CANDIDATES[*]}")"
+      echo ""
+      echo -e "${RED}======================================================================${RESET}"
+      echo -e " ${RED}ALL ELIGIBLE COLAB GPUs ARE CURRENTLY UNAVAILABLE${RESET}"
+      echo -e " ${YELLOW}Tried:${RESET} ${TRIED_STR} (Google Colab regional GPU pool is at capacity)"
+      echo -e " ${CYAN}Tip:${RESET} Try again in a few minutes, or switch to CPU:"
+      echo -e "      ${BOLD}/switch cpu${RESET}        (Google Colab CPU)"
+      echo -e "      ${BOLD}/switch local-cpu${RESET}  (Local Machine CPU)"
+      echo -e "${RED}======================================================================${RESET}"
+      exit 1
+    fi
+  else
+    NEW_ARGS=(new -s "$SESSION_NAME")
+    if [[ "$HARDWARE" == tpu:* ]]; then
+      NEW_ARGS+=(--tpu "${HARDWARE#tpu:}")
+    fi
+    if [[ "$HIGH_MEM" -eq 1 ]]; then
+      NEW_ARGS+=(--high-mem)
+    fi
+    echo -e "${CYAN}[Colab Runner] Requesting Colab runtime (${HW_LABEL})...${RESET}"
+    ASSIGN_OUT="$(COLAB_CLI_ASSIGN_RETRIES=1 COLAB_CLI_RETRY_BACKOFF=3 run_colab "${NEW_ARGS[@]}" 2>&1)"
+    if [[ $? -ne 0 ]]; then
+      REASON="$(summarize_assign_error "$ASSIGN_OUT")"
+      echo -e "${RED}[Colab Runner] Colab runtime '${HW_LABEL}' is currently unavailable (${REASON}).${RESET}" >&2
+      exit 1
+    fi
+    echo -e "${GREEN}[colab] Session '${SESSION_NAME}' READY.${RESET}"
+    SESSION_START_EPOCH="$(date +%s)"
+    write_runner_state
   fi
-  echo -e "${CYAN}[Colab Runner] Provisioning Colab runtime (${HW_LABEL})...${RESET}"
-  if ! run_colab "${NEW_ARGS[@]}"; then
-    echo -e "${RED}[Colab Runner] Failed to provision Colab runtime '${HW_LABEL}'.${RESET}" >&2
-    exit 1
-  fi
-  SESSION_START_EPOCH="$(date +%s)"
 else
   echo -e "${GREEN}[Colab Runner] Reusing active Colab session '${SESSION_NAME}' (${HW_LABEL}).${RESET}"
   if [[ "$SESSION_START_EPOCH" == "0" ]]; then
